@@ -81,7 +81,7 @@ export default function SensorData({ navigation }) {
   useEffect(() => {
     const fetchMood = async () => {
       try {
-        const response = await fetch('http://172.17.18.238:5000/mood');
+        const response = await fetch('http://172.17.31.187:5000/mood');
         const data = await response.json();
         const newMood = data.mood;
         

@@ -50,7 +50,7 @@ export default function LiveStream() {
   useEffect(() => {
     const fetchMood = async () => {
       try {
-        const response = await fetch('http://172.17.18.238:5000/mood');
+        const response = await fetch('http://172.17.31.187:5000/mood');
         const data = await response.json();
         const newMood = data.mood;
         
@@ -89,7 +89,7 @@ export default function LiveStream() {
   return (
     <View style={styles.container}>
       <WebView 
-        source={{ uri: "http://172.17.18.238:5000/video_feed" }} 
+        source={{ uri: "http://172.17.31.187:5000/video_feed" }} 
         style={styles.webView}
         allowsInlineMediaPlayback={true} 
         mediaPlaybackRequiresUserAction={false}

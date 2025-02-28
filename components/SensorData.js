@@ -9,6 +9,7 @@ import {
   Animated,
   Easing,
   Image,
+  Button,
   ScrollView
 } from "react-native";
 import { getDatabase, ref, onValue, push, set } from "firebase/database";
@@ -18,31 +19,36 @@ import { Audio } from "expo-av";
 import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
+
 const database = getDatabase(firebaseApp);
 let fallAlarmSound = null; // Global sound instance
 
 export default function SensorData({ navigation }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [currentMood, setCurrentMood] = useState("Unknown");
   const fallAlertRef = useRef(false);
   const tempAlertRef = useRef(false);
+  const sadMoodAlertRef = useRef(false);
+  const lastMoodNotificationTime = useRef(0);
   
   // Animation values
   const fallPulse = useRef(new Animated.Value(1)).current;
   const temperatureScale = useRef(new Animated.Value(0)).current;
   const humidityOpacity = useRef(new Animated.Value(0)).current;
+  const moodPulse = useRef(new Animated.Value(1)).current;
 
   // Start pulsing animation for fall detection
-  const startPulseAnimation = () => {
+  const startPulseAnimation = (animatedValue) => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(fallPulse, {
+        Animated.timing(animatedValue, {
           toValue: 1.2,
           duration: 500,
           useNativeDriver: true,
           easing: Easing.inOut(Easing.ease),
         }),
-        Animated.timing(fallPulse, {
+        Animated.timing(animatedValue, {
           toValue: 1,
           duration: 500,
           useNativeDriver: true,
@@ -71,6 +77,36 @@ export default function SensorData({ navigation }) {
     }
   }, [data]);
 
+  // Fetch mood data from Flask backend
+  useEffect(() => {
+    const fetchMood = async () => {
+      try {
+        const response = await fetch('http://172.17.18.238:5000/mood');
+        const data = await response.json();
+        const newMood = data.mood;
+        
+        setCurrentMood(newMood);
+        
+        // Check if mood is sad or indicates pain
+        if ((newMood.toLowerCase() === 'sad' || newMood.toLowerCase() === 'fear') && !sadMoodAlertRef.current) {
+          sadMoodAlertRef.current = true;
+          sendMoodAlert(newMood);
+          startPulseAnimation(moodPulse);
+        } else if (newMood.toLowerCase() !== 'sad' && newMood.toLowerCase() !== 'fear' && sadMoodAlertRef.current) {
+          sadMoodAlertRef.current = false;
+          moodPulse.setValue(1); // Reset animation
+        }
+      } catch (error) {
+        console.error('Error fetching mood:', error);
+      }
+    };
+
+    const moodInterval = setInterval(fetchMood, 2000); // Check mood every 2 seconds
+    
+    // Cleanup
+    return () => clearInterval(moodInterval);
+  }, []);
+
   useEffect(() => {
     const sensorRef = ref(database, "house/");
     setLoading(true);
@@ -86,7 +122,7 @@ export default function SensorData({ navigation }) {
       if (value?.fall_detection === true && !fallAlertRef.current) {
         fallAlertRef.current = true;
         sendFallAlert();
-        startPulseAnimation();
+        startPulseAnimation(fallPulse);
       } else if (value?.fall_detection === false && fallAlertRef.current) {
         fallAlertRef.current = false;
         stopAlarmSound();
@@ -144,6 +180,20 @@ export default function SensorData({ navigation }) {
     return ["#2193b0", "#6dd5ed"];
   }
 
+  function getMoodColor(mood) {
+    const moodLower = mood.toLowerCase();
+    switch (moodLower) {
+      case "happy": return ["#FFD700", "#FFA500"];
+      case "sad": return ["#1E3B70", "#29539B"];
+      case "angry": return ["#FF416C", "#FF4B2B"];
+      case "fear": return ["#7F00FF", "#E100FF"];
+      case "surprise": return ["#FF8008", "#FFC837"];
+      case "disgust": return ["#56ab2f", "#a8e063"];
+      case "neutral": return ["#4286f4", "#373B44"];
+      default: return ["#4286f4", "#373B44"];
+    }
+  }
+
   function logAlert(type, message) {
     const alertsRef = ref(database, "alerts/");
     const newAlertRef = push(alertsRef);
@@ -152,6 +202,19 @@ export default function SensorData({ navigation }) {
       message: message,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  async function sendMoodAlert(mood) {
+    // Prevent notification spam - limit to one notification every 30 seconds
+    const now = Date.now();
+    if (now - lastMoodNotificationTime.current < 30000) return;
+    
+    lastMoodNotificationTime.current = now;
+    
+    const message = `Person appears to be ${mood.toLowerCase()}`;
+    logAlert("Mood", message);
+    sendNotification(" Emotional Distress Detected", message);
+    Alert.alert("Emotional Distress Detected", message);
   }
 
   async function sendTempAlert(temp) {
@@ -241,8 +304,10 @@ export default function SensorData({ navigation }) {
   const comfortLevel = getComfortLevel(data.temp, data.humidity);
   const comfortColors = getComfortColor(comfortLevel);
   const tempColors = getTemperatureColor(data.temp);
+  const moodColors = getMoodColor(currentMood);
   const tempGaugePosition = getTemperatureGaugePosition(data.temp);
   const humidityGaugePosition = getHumidityGaugePosition(data.humidity);
+  const isSadOrFear = currentMood.toLowerCase() === 'sad' || currentMood.toLowerCase() === 'fear';
 
   return (
     <ScrollView style={styles.container}>
@@ -299,6 +364,7 @@ export default function SensorData({ navigation }) {
         </LinearGradient>
       </Animated.View>
 
+      
       {/* Humidity Card */}
       <Animated.View 
         style={[
@@ -390,6 +456,43 @@ export default function SensorData({ navigation }) {
         </LinearGradient>
       </Animated.View>
 
+      {/* Mood Detection Card */}
+      <Animated.View 
+        style={[
+          styles.card, 
+          {transform: [{ scale: isSadOrFear ? moodPulse : 1 }]}
+        ]}
+      >
+        <LinearGradient
+          colors={moodColors}
+          style={styles.cardGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
+          <View style={styles.cardHeader}>
+            <MaterialCommunityIcons 
+              name={isSadOrFear ? "emoticon-sad" : "emoticon"} 
+              size={28} 
+              color="white" 
+            />
+            <Text style={styles.cardTitle}>Mood Detection</Text>
+          </View>
+          
+          <View style={styles.moodContainer}>
+            <Text style={styles.moodValue}>{currentMood}</Text>
+            
+            {isSadOrFear && (
+              <View style={styles.alertBadge}>
+                <Text style={styles.alertBadgeText}>
+                  Emotional distress detected!
+                </Text>
+              </View>
+            )}
+          </View>
+        </LinearGradient>
+      </Animated.View>
+
+
       {/* Action Buttons */}
       <View style={styles.actionButtonsContainer}>
         <TouchableOpacity
@@ -407,100 +510,106 @@ export default function SensorData({ navigation }) {
           </LinearGradient>
         </TouchableOpacity>
 
-        
+        <TouchableOpacity 
+          style={styles.historyButton}
+          onPress={() => navigation.navigate("LiveStream")}
+        >
+          <LinearGradient colors={["#FF416C", "#FF4B2B"]} style={styles.buttonGradient}>
+            <MaterialCommunityIcons name="video" size={24} color="white" />
+            <Text style={styles.buttonText}>View Live Stream</Text>
+          </LinearGradient>
+        </TouchableOpacity>
       </View>
-
-      {/* Emergency Contact Button */}
-
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  // Keeping existing sty
   container: {
     flex: 1,
-    backgroundColor: "#121212",
-    padding: 16,
+    backgroundColor: "#F5F5F5",
   },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#121212",
+    backgroundColor: "#F5F5F5",
   },
   loadingText: {
     marginTop: 10,
-    color: "#FFFFFF",
     fontSize: 16,
+    color: "#6200EE",
   },
   errorContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#121212",
+    backgroundColor: "#F5F5F5",
     padding: 20,
   },
   errorText: {
-    color: "#FFFFFF",
-    fontSize: 18,
     marginTop: 10,
+    fontSize: 18,
+    color: "#333",
     textAlign: "center",
   },
   retryButton: {
     marginTop: 20,
-    paddingVertical: 12,
-    paddingHorizontal: 30,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
     backgroundColor: "#6200EE",
-    borderRadius: 8,
+    borderRadius: 4,
   },
   retryButtonText: {
-    color: "#FFFFFF",
+    color: "white",
     fontSize: 16,
-    fontWeight: "bold",
   },
   header: {
-    marginBottom:20,
+    padding: 16,
+    paddingTop: 24,
+    backgroundColor: "#6200EE",
+    alignItems: "center",
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: "bold",
-    color: "#FFFFFF",
+    color: "white",
   },
   headerSubtitle: {
-    fontSize: 16,
-    color: "#AAAAAA",
+    fontSize: 14,
+    color: "rgba(255, 255, 255, 0.8)",
     marginTop: 4,
   },
   card: {
-    borderRadius: 16,
-    overflow: "hidden",
-    marginBottom: 16,
-    elevation: 8,
+    margin: 8,
+    borderRadius: 10,
+    elevation: 3,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    backgroundColor: "white",
+    overflow: "hidden",
   },
   fallCard: {
-    borderWidth: 2,
-    borderColor: "#FF4B2B",
+    marginBottom: 16,
   },
   cardGradient: {
-    padding: 20,
+    padding: 16,
   },
   cardContent: {
-    padding: 20,
-    backgroundColor: "#1E1E1E",
+    padding: 16,
   },
   cardHeader: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 12,
   },
   cardTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "bold",
-    color: "#FFFFFF",
+    color: "white",
     marginLeft: 8,
   },
   temperatureContainer: {
@@ -509,70 +618,16 @@ const styles = StyleSheet.create({
   temperatureValue: {
     fontSize: 36,
     fontWeight: "bold",
-    color: "#FFFFFF",
-    marginBottom: 16,
-  },
-  temperatureGauge: {
-    width: "100%",
-    marginTop: 8,
-  },
-  temperatureGaugeBackground: {
-    height: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    borderRadius: 8,
-    overflow: "hidden",
-  },
-  temperatureGaugeFill: {
-    height: "100%",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
-  },
-  temperatureGaugeLabels: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 4,
-  },
-  gaugeLabel: {
-    color: "#FFFFFF",
-    fontSize: 12,
-  },
-  alertBadge: {
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginTop: 16,
-  },
-  alertBadgeText: {
-    color: "#FF4B2B",
-    fontWeight: "bold",
+    color: "white",
+    marginBottom: 8,
   },
   humidityContainer: {
     alignItems: "center",
-    
   },
   humidityValue: {
     fontSize: 36,
     fontWeight: "bold",
-    marginBottom: 16,
-  },
-  humidityGauge: {
-    width: "100%",
-    marginTop: 8,
-  },
-  humidityGaugeBackground: {
-    height: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    overflow: "hidden",
-  },
-  humidityGaugeFill: {
-    height: "100%",
-    borderRadius: 8,
-  },
-  humidityGaugeLabels: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 4,
+    marginBottom: 8,
   },
   comfortContainer: {
     alignItems: "center",
@@ -580,8 +635,7 @@ const styles = StyleSheet.create({
   comfortValue: {
     fontSize: 28,
     fontWeight: "bold",
-    color: "#FFFFFF",
-    textAlign: "center",
+    color: "white",
   },
   fallDetectionContainer: {
     alignItems: "center",
@@ -589,65 +643,99 @@ const styles = StyleSheet.create({
   fallDetectionStatus: {
     fontSize: 24,
     fontWeight: "bold",
-    color: "#FFFFFF",
+    color: "white",
     textAlign: "center",
   },
   fallWarning: {
     fontSize: 18,
-    color: "#FFFFFF",
+    color: "white",
     marginTop: 8,
     textAlign: "center",
   },
-  actionButtonsContainer: {
+  temperatureGauge: {
+    width: "100%",
+    marginVertical: 8,
+  },
+  temperatureGaugeBackground: {
+    height: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.3)",
+    borderRadius: 6,
+    overflow: "hidden",
+  },
+  temperatureGaugeFill: {
+    height: "100%",
+    backgroundColor: "white",
+  },
+  temperatureGaugeLabels: {
     flexDirection: "row",
     justifyContent: "space-between",
+    marginTop: 4,
+  },
+  humidityGauge: {
+    width: "100%",
+    marginVertical: 8,
+  },
+  humidityGaugeBackground: {
+    height: 12,
+    backgroundColor: "rgba(92, 107, 192, 0.2)",
+    borderRadius: 6,
+    overflow: "hidden",
+  },
+  humidityGaugeFill: {
+    height: "100%",
+  },
+  humidityGaugeLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+  gaugeLabel: {
+    fontSize: 12,
+    color: "white",
+  },
+  alertBadge: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    backgroundColor: "rgba(0, 0, 0, 0.2)",
+    borderRadius: 20,
+  },
+  alertBadgeText: {
+    color: "white",
+    fontWeight: "bold",
+  },
+  actionButtonsContainer: {
+    margin: 8,
     marginBottom: 16,
   },
   historyButton: {
-    flex: 1,
-    marginRight: 8,
-    borderRadius: 12,
+    marginBottom: 8,
+    borderRadius: 8,
     overflow: "hidden",
-    elevation: 5,
-  },
-  dismissButton: {
-    flex: 1,
-    marginLeft: 8,
-    borderRadius: 12,
-    overflow: "hidden",
-    elevation: 5,
   },
   buttonGradient: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
     flexDirection: "row",
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
   },
   buttonText: {
-    color: "#FFFFFF",
+    color: "white",
     fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 8,
-  },
-  emergencyButton: {
-    borderRadius: 12,
-    overflow: "hidden",
-    elevation: 5,
-    marginTop: 8,
-    marginBottom: 24,
-  },
-  emergencyButtonGradient: {
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  emergencyButtonText: {
-    color: "#FFFFFF",
-    fontSize: 18,
     fontWeight: "bold",
     marginLeft: 8,
   },
+
+  // New styles for mood card
+  moodContainer: {
+    alignItems: "center",
+    paddingVertical: 8,
+  },
+  moodValue: {
+    fontSize: 28,
+    fontWeight: "bold",
+    color: "white",
+    marginBottom: 8,
+  }
 });
